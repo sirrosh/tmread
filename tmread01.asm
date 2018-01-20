@@ -1,20 +1,20 @@
 
-#include P16C84.inc
+#include P16F84A.inc
 	__CONFIG   _CP_OFF & _WDT_OFF & _PWRTE_ON & _HS_OSC
         __IDLOCS H'6969'
 
-;	Где находится считыватель
+;	iButton reader (1-wire bus) pin
 TMPort		equ	PORTA
 TMPin		equ	4
 TMMask		equ	0x10
-;	Где пищалка
+;	Buzzer pin
 BzPort		equ	PORTB
 BzPin		equ	2
 ;BzPin		equ	1
-;	Где джампер конфигурации
+;	Config button
 JPort		equ	PORTB
 JPin		equ	4
-;	Где замок
+;	Door lock output
 LockPort	equ	PORTB
 LockPin		equ	7
 
@@ -29,37 +29,42 @@ BTM2		equ	0x11
 BTM3		equ	0x12
 BTM4		equ	0x13
 
+RESET CODE 0x0000
+    GOTO Beginning
+
+MAIN CODE
+
 Beginning
 	CLRF	INTCON
-        BSF     STATUS, RP0     ;       Страница #2
-        MOVLW   0xC8            ;       Настройка:
-                                ;       - пределитель 1:1
-                                ;       - нагрузки отключены
-                                ;       - пределитель к WDT
-                                ;       - RTCC к генератору
+        BSF     STATUS, RP0     ;       Page #2
+        MOVLW   0xC8            ;       Settings:
+                                ;       - divider 1:1
+                                ;       - pullups off
+                                ;       - divider to WDT
+                                ;       - clock RTCC
         MOVWF   OPTION_REG
-	BCF	TRISA, TMPin    ;       Считыватель - на вывод
-	BCF	TRISB, 1	;	Отладочный индикатор - на вывод
-	BCF	TRISB, BzPin	;	Пищалка - на вывод
-	BCF	TRISB, LockPin	;	Замок - на вывод
-	BSF	TRISB, JPin	;	Джампер - на ввод
-        BCF     STATUS, RP0     ;       Страница #1
+	BCF	TRISA, TMPin    ;       iButton readet - out
+	BCF	TRISB, 1	;	debug LED - out
+	BCF	TRISB, BzPin	;	buzzer - out
+	BCF	TRISB, LockPin	;	door lock - out
+	BSF	TRISB, JPin	;	config button - in
+        BCF     STATUS, RP0     ;       Page #1
 
-	BCF	LockPort, LockPin	;Немедлено закрыть дверь!
-	BCF	BzPort, BzPin
+	BCF	LockPort, LockPin      ;Lock the door
+	BCF	BzPort, BzPin           
 
-	BSF	TMPort, TMPin	;	Ставим единицу на считыватель.
+	BSF	TMPort, TMPin	;	High level to 1-wire bus
 	BCF	PORTB, 1
 
-;---	Проверим, замкнут ли джампер конфигурации
+;---	Testing the Setup button
 	BTFSC	JPort, JPin
-	GOTO	NoConfig	;	Нет запроса конфигурации - идем дальше
+	GOTO	NoConfig	;	Jump to main loop if not pressed
 
 ;-------------------------------------------------
-;	Режим конфигурации контроллера
+;	Configuration mode
 ;-------------------------------------------------
-	CALL	BeepOnce	;	Есть запрос - пищим
-;---	Чистим всю память ключей (до 3Fh)
+	CALL	BeepOnce	;	Beeping to indicate entering config mode
+;---	Erasing the whole key memory (up to 3Fh)
 	MOVLW	0x3F
 	MOVWF	LoopReg
  	CLRF	EEADR
@@ -67,7 +72,7 @@ Beginning
 	COMF	EEDATA
 
 CLRL
-        BSF     STATUS, RP0     ;       Страница #2
+        BSF     STATUS, RP0     ;       Page #2
 	BSF	EECON1, WREN
 	MOVLW	0x55
 	MOVWF	EECON2
@@ -77,26 +82,26 @@ CLRL
 	BTFSS	EECON1, EEIF
 	GOTO	$-1
 	BCF	EECON1, EEIF
-        BCF     STATUS, RP0     ;       Страница #1
+        BCF     STATUS, RP0     ;       Page #1
 	INCF	EEADR
 	DECFSZ	LoopReg, F
 	GOTO	CLRL
-	CALL	BeepOnce	;	Снова пищим
+	CALL	BeepOnce	;	Beep again
 
- 	CLRF	EEADR		;	Начинаем запись сначала
+ 	CLRF	EEADR		;	Starting write from the beginning
 
 WaitForKey
-	CALL	PresenceCheck	;	Проверяем, есть ли ключ
-	ANDLW	0xFF		;	Если его нет - игнорируем
+	CALL	PresenceCheck	;	Check if something is present on 1-wire bus
+	ANDLW	0xFF		;	If not - ignore
 	BTFSS	STATUS, Z
-	GOTO	NoKeyConfig	;	Нет ключа
+	GOTO	NoKeyConfig	;	Nothing is here
 
-	CALL	ReadKeySID	;	Может давать ошибку при fID != 1
-	ANDLW	0xFF		;	Если ошибка - игнорируем
+	CALL	ReadKeySID	;	May be an error if fID != 1
+	ANDLW	0xFF		;	Ignore key if there's an error
 	BTFSS	STATUS, Z
-	GOTO	NoKeyConfig	;	Нет ключа
+	GOTO	NoKeyConfig	;	Nothing is here
 
-;---	Записываем ключ в память
+;---	Write a key to EEPROM
 	MOVF	BTM1, W
 	CALL	EEWrite
 	INCF	EEADR
@@ -109,26 +114,26 @@ WaitForKey
 	MOVF	BTM4, W
 	CALL	EEWrite
 	INCF	EEADR
-	CALL	BeepOnce	;	Пищим, подтверждая запись
+	CALL	BeepOnce	;	Confirming beep
 	
-;---	Теперь ждем, пока ключ уберут
+;---	Wait till key will be removed
 KeyPresent
-	CALL	PresenceCheck	;	Проверяем, есть ли ключ
+	CALL	PresenceCheck	;	If it's still here
 	ANDLW	0xFF
 	BTFSC	STATUS, Z
 	GOTO	KeyPresent
 
 NoKeyConfig
-	CALL	SetToOutput	;	Пока ждем - выводим единицу в порт
+	CALL	SetToOutput	;	Set 1-wire but to output and high
 	BSF	TMPort, TMPin
 	CALL	SleepDelay
 	GOTO	WaitForKey
 
 ;-------------------------------------------------
-;	Основной режим контроллера
+;	Main working mode
 ;-------------------------------------------------
 NoConfig
-;---	Здесь проверяем, есть ли в памяти хоть один ключ
+;---	Checking if there's at least one key in EEPROM
 	CLRF	EEADR
 	MOVLW	0x40
 	MOVWF	LoopReg
@@ -136,36 +141,36 @@ CheckL
 	CALL	EERead
 	MOVWF	RDByte
 	INCF	EEADR
-	INCFSZ	RDByte, F	;	Если прочитано не FFh - выходим
+	INCFSZ	RDByte, F	;	Exit the loop if it's not 0FFh
 	GOTO	MainKey
 	DECFSZ	LoopReg, F
 	GOTO	CheckL
-	BSF	BzPort, BzPin	;	Если дошло сюда - память обнуленa
-	GOTO	$		;	Пищим и висим...
+	BSF	BzPort, BzPin	;	Beeping constantly...
+	GOTO	$		;	... and infinitely
 	
 
-;---	Главный цикл ожидания и распознавания ключа	
+;---	The main cycle
 MainKey	
-	CALL	PresenceCheck	;	Проверяем, есть ли ключ
-	ANDLW	0xFF		;	Если его нет - игнорируем
+	CALL	PresenceCheck	;	Check if anything present on the 1-wire bus
+	ANDLW	0xFF		;	Nothing found, ignore the rest
 	BTFSS	STATUS, Z
 	GOTO	NoKey
 
-	CALL	ReadKeySID	;	Читаем ключ в буферные байты
-	ANDLW	0xFF		;	Если ошибка - игнорируем
+	CALL	ReadKeySID	;	Reading out the key
+	ANDLW	0xFF		;	Ignore it, if there was a read error
 	BTFSS	STATUS, Z
 	GOTO	NoKey
 
-;---	Теперь секция распознавания ключа
+;---	Key recognition section
 	CLRF	EEADR
 	MOVLW	0x0A
 	MOVWF	LoopReg
 
 ReadAgain
-	CLRF	ComReg		;	Регистр сравнения
+	CLRF	ComReg		;	Compare register
 
-	CALL	EERead		;	Читаем байты из памяти
-	XORWF	BTM1, W		;	и проверяем их на идентичность
+	CALL	EERead		;	Read a byte from EEPROM key memory
+	XORWF	BTM1, W		;	and compare with the received byte
 	BTFSS	STATUS, Z
 	INCF	ComReg
 	INCF	EEADR
@@ -188,12 +193,14 @@ ReadAgain
 	INCF	ComReg
 	INCF	EEADR
 
-;---	Если ключ совпадет - не будет ни одного инкремента, comreg=0
+;---	If a key will match, the comreg=0
+;---    2018 UPDATE: there's a bug. The door will open a 0xFFFFFFFF fake key
+
 	MOVLW	0xFF
 	ANDWF	ComReg, F
 	BTFSS	STATUS, Z
 	GOTO	IncorrectKey
-	GOTO	KeyFound	;	Если все прошел - ключ совпал
+	GOTO	KeyFound	;	If a key matched, go further
 
 IncorrectKey
 	DECFSZ	LoopReg
@@ -201,25 +208,26 @@ IncorrectKey
 	GOTO	NoKey
 
 KeyFound
-;	BSF	PORTB, 1	;	Включаем отладочный индикатор и все
+;	BSF	PORTB, 1	;	Debug LED
 ;	GOTO	$
-	CALL	ReleaseLock	;	Теперь можно открыть замок
+	CALL	ReleaseLock	;	Now you can open the lock
 
 NoKey
-	CALL	SetToOutput	;	Пока ждем - выводим единицу в порт
+	CALL	SetToOutput	;	Set 1-wire but to output and high
 	BSF	TMPort, TMPin
 
-	CALL	SleepDelay	;	Делаем длинную паузу для "отдыха"
-	GOTO	MainKey		;	"У попа была собака..."
+	CALL	SleepDelay	;	Have some sleep
+	GOTO	MainKey		;	and continue the main cycle
 
-
-;	Посылка команды чтения серийного номера
-;	и чтение SID ключа в буфер с возвратом 0FF при ошибке, иначе - 0
+;-----------------------------------------------------------
+;       ReadKeySID subroutine
+;	1-wire bus TX a read command
+;	then RX a key SID returning 0xFF on error, 0 when ok
 ReadKeySID
 	CALL	SetToOutput
 
-;--	Посылка команды чтения (33h)
-;	Передаем 
+;--	Send a read command (33h)
+;	TXing
 
 	MOVLW	0x33
 	MOVWF	RDByte
@@ -228,7 +236,7 @@ ReadKeySID
 
 Nbl1
 	CALL	Relaxation
-	BCF	TMPort, TMPin	;	Тактируем ключ перепадом
+	BCF	TMPort, TMPin	;	Clock the bus
 	NOP
 	NOP
 	NOP
@@ -243,10 +251,10 @@ Nbl1
 	GOTO	Nbl1
 
 
-	BSF	TMPort, TMPin	;	"Взводим" порт - ключ ждет след. перепад
+	BSF	TMPort, TMPin	;	Setting to high, slave waits the next edge
 
-;--	Теперь остается только прочитать данные
-;	Читаем 1 байт family code. Если не 01h - возвращаем ошибку
+;--	Reading data from 1-wire bus
+;	A family code byte. If it's not 01h we can't handle it
 
 	CALL	ReadKeyByte
 	MOVF	RDByte, W
@@ -254,7 +262,7 @@ Nbl1
 	BTFSS	STATUS, Z
 	RETLW	0xFF		;	Family code != 01h
 
-;--	Читаем и сохраняем 4 байта данных ключа
+;--	Reading the next 4 bytes
 	CALL	ReadKeyByte
 	MOVF	RDByte, W
 	MOVWF	BTM1
@@ -267,7 +275,8 @@ Nbl1
 	CALL	ReadKeyByte
 	MOVF	RDByte, W
 	MOVWF	BTM4
-
+	
+;---    Some old debug code
 ;	MOVLW	0x06
 ;	MOVWF	LoopReg
 ; 	CLRF	EEADR
@@ -276,7 +285,7 @@ Nbl1
 ;	CALL	ReadKeyByte
 ;	MOVF	RDByte, W
 ;	MOVWF	EEDATA
-;       BSF     STATUS, RP0     ;       Страница #2
+;       BSF     STATUS, RP0     ;       Page #2
 ;	BSF	EECON1, WREN
 ;	MOVLW	0x55
 ;	MOVWF	EECON2
@@ -286,19 +295,21 @@ Nbl1
 ;	BTFSS	EECON1, EEIF
 ;	GOTO	$-1
 ;	BCF	EECON1, EEIF
-;       BCF     STATUS, RP0     ;       Страница #1
+;       BCF     STATUS, RP0     ;       Page #1
 ;	INCF	EEADR
 ; 
 ;	DECFSZ	LoopReg, F
 ;	GOTO	RL
 ;
-;	BSF	PORTB, 1	;	Включаем отладочный индикатор и все
+;	BSF	PORTB, 1	;	Debug LED on
 ;	GOTO	$
 
 
 	RETLW	0
 
-;	Чтение байта из ключа в RDByte
+;-----------------------------------------------------------
+;       ReadKeyByte subroutine
+;	RX a byte from 1-wire bus to RDByte
 ReadKeyByte
 	CLRF	RDByte
 	MOVLW	0x08
@@ -306,21 +317,21 @@ ReadKeyByte
 	CALL	SetToOutput
 BLoop
 	CALL	Relaxation
-	BCF	TMPort, TMPin	;	Тактируем ключ перепадом
+	BCF	TMPort, TMPin	;	Clock a slave
 	NOP
 	NOP
 	NOP
 	CALL	SetToInput
 	NOP
-	MOVF	PORTA, W	;	Вводим данные с ключа
+	MOVF	PORTA, W	;	Receiving data
 	CALL	SetToOutput
-	BSF	TMPort, TMPin	;	"Взводим" порт - ключ ждет след. перепад
+	BSF	TMPort, TMPin	;	Setting the bus to high
 	ANDLW	TMMask
-	BTFSC	STATUS, Z	;	Если прочитали "0"
+	BTFSC	STATUS, Z	;	If it's "0"
 	BCF	STATUS, C
-	BTFSS	STATUS, Z	;	Если прочитали "1"
+	BTFSS	STATUS, Z	;	If it's "1"
 	BSF	STATUS, C
-	RRF	RDByte, F	;	Задвигаем очередной бит
+	RRF	RDByte, F	;	Pushing the bit
 	MOVLW	0xF5
 	CALL	Delay
 	DECFSZ	RDLoop, F
@@ -328,9 +339,9 @@ BLoop
 
 	RETURN
 ;----------------------------------------------------------------------
-;--	Вспомогательные подпрограммы протокола "1WireBUS"
+;--	1-Wire BUS subroutines
 ;----------------------------------------------------------------------
-;	Релаксация шины положительным фронтом
+;	Relaxing the bus with a positive edge
 Relaxation
 	BSF	TMPort, TMPin
 	NOP
@@ -338,36 +349,36 @@ Relaxation
 	NOP
 	RETURN
 
-;	Задержка на W us
+;	Delay for W us
 Delay
-	ADDLW	0x07	;	Корректируем на 7 мкс
+	ADDLW	0x07	;	7us correction
 	MOVWF	TMR0
 Lp	BTFSS   INTCON, T0IF
         GOTO    Lp
         BCF     INTCON, T0IF
 	RETURN
 
-;	Переводим порт в режим ввода (4 мкс)
+;	Setting port to input (4 us)
 SetToInput	
-        BSF     STATUS, RP0     ;       Страница #2
-	BSF	TRISA, TMPin    ;       Настраиваем порт на ввод
-        BCF     STATUS, RP0     ;       Страница #1
+        BSF     STATUS, RP0     ;       Page #2
+	BSF	TRISA, TMPin    ;       Setting to input   
+        BCF     STATUS, RP0     ;       Page #1
 	RETURN
 
-;	Переводим порт в режим вывода (4 мкс)
+;	Setting port to output (4 us)
 SetToOutput	
-        BSF     STATUS, RP0     ;       Страница #2
-	BCF	TRISA, TMPin    ;       Настраиваем порт на ввод
-        BCF     STATUS, RP0     ;       Страница #1
+        BSF     STATUS, RP0     ;       Page #2
+	BCF	TRISA, TMPin    ;       Setting to output
+        BCF     STATUS, RP0     ;       Page #1
 	RETURN
 
 ;----------------------------------------------------------------------
-;--	Остальные вспомогательные подпрограммы
+;--	Misc. subroutines
 ;----------------------------------------------------------------------
-;	Запись в EEPROM. EEADR и W (EEDATA) должны быть установлены.
+;	Write W to EEPROM. EEADR should be set.
 EEWrite
 	MOVWF	EEDATA
-	BSF     STATUS, RP0     ;       Страница #2
+	BSF     STATUS, RP0     ;       Page #2
 	BSF	EECON1, WREN
 	MOVLW	0x55
 	MOVWF	EECON2
@@ -377,113 +388,113 @@ EEWrite
 	BTFSS	EECON1, EEIF
 	GOTO	$-1
 	BCF	EECON1, EEIF
-	BCF     STATUS, RP0     ;       Страница #1
+	BCF     STATUS, RP0     ;       Page #1
 
 	RETURN
 
-;	Чтение из EEPROM в W. EEADR должeн быть установлен.
+;	Read from EEPROM into W. EEADR should be set.
 EERead
-	BSF     STATUS, RP0     ;       Страница #2
-	BSF	EECON1, RD	;	Читаем память
-	BCF     STATUS, RP0     ;       Страница #1
+	BSF     STATUS, RP0     ;       Page #2
+	BSF	EECON1, RD	;	Reading the memory
+	BCF     STATUS, RP0     ;       Page #1
 	NOP
 	NOP
 	MOVF	EEDATA, W
 	RETURN
 
-;	Проверка присутствия ключа. Если нет - возвращаем 0FFh
+;	Probing if a key is present on a bus. Returning 0FFh if not
 PresenceCheck
 
-;---	Проверка присутствия ключа - "просаживание" питания на 480 мкс.
-	BCF	TMPort, TMPin	;	Ставим ноль на считыватель.
+;---	Resetting a whole 1-wire bus: dropping to 0 for 480us.
+	BCF	TMPort, TMPin	;	Dropping low.
 	CLRF	TMR0
         BCF     INTCON, T0IF
-Lpk1    BTFSS   INTCON, T0IF	;	Ждем ~256 мкс
+Lpk1    BTFSS   INTCON, T0IF	;	Waiting for ~256 us
         GOTO    Lpk1
         BCF     INTCON, T0IF
 	MOVLW	0x30
 	MOVWF	TMR0
-Lpk2    BTFSS   INTCON, T0IF	;	Ждем еще ~224 мкс
+Lpk2    BTFSS   INTCON, T0IF	;	And ~224 us
         GOTO    Lpk2
         BCF     INTCON, T0IF
 
-	BSF	TMPort, TMPin	;	Ставим единицу на считыватель.
+	BSF	TMPort, TMPin	;	Setting back high.
 
 	CALL	SetToInput
 
-;---	Сразу после ресета должны прочитать единицу.
-	MOVF	PORTA, W	;	Вводим данные с ключа и выделяем их
+;---	There should be 1 immediately after reset.
+	MOVF	PORTA, W	;	Bus data input
 	ANDLW	TMMask
-	BTFSC	STATUS, Z	;	Если в акк. ненулевое значение - переходим
-	RETLW	0xFF		;	Ключа нет - уходим.
+	BTFSC	STATUS, Z	;	Testing for a zero
+	RETLW	0xFF		;	This is not a key, returning.
 
 
 
 	MOVLW	0xBF
 	MOVWF	TMR0
-Lpk3    BTFSS   INTCON, T0IF	;	Ждем импульса присутствия ~35 мкс
+Lpk3    BTFSS   INTCON, T0IF	;	Wait for a presence pulse ~35 us
         GOTO    Lpk3
         BCF     INTCON, T0IF
-	MOVF	PORTA, W	;	Вводим данные с ключа и выделяем их
+	MOVF	PORTA, W	;	Bus data input
 	ANDLW	TMMask
 
-	BTFSS	STATUS, Z	;	Если в акк. ненулевое значение - не перемычка
-	RETLW	0xFF		;	Ключа нет - уходим.
+	BTFSS	STATUS, Z	;	Testing for a 1
+	RETLW	0xFF		;	This is not a key, returning.
 
 	CALL	SetToOutput
 	BSF	TMPort, TMPin
 
-;---	Теперь ждем 480 мкс для восстановления ключа после ресета
+;---	Waiting 480us for the key recovering after a reset
 	CLRF	TMR0
         BCF     INTCON, T0IF
-Lpw1    BTFSS   INTCON, T0IF	;	Ждем ~256 мкс
+Lpw1    BTFSS   INTCON, T0IF	;	Delay ~256us
         GOTO    Lpw1
         BCF     INTCON, T0IF
 	MOVLW	0x30
 	MOVWF	TMR0
-Lpw2    BTFSS   INTCON, T0IF	;	Ждем еще ~224 мкс
+Lpw2    BTFSS   INTCON, T0IF	;	Delay ~224us
         GOTO    Lpw2
         BCF     INTCON, T0IF
 
 	RETLW	0
 
-;	Общая пауза между опросами ключа
+;	A sleep subroutine for the main cycle
 SleepDelay
 
-;	Настраиваем заново для выдержки паузы
-        BSF     STATUS, RP0     ;       Страница #2
-        MOVLW   0xC7            ;       Настройка:
-                                ;       - пределитель 1:256
-                                ;       - нагрузки отключены
-                                ;       - пределитель к RTCC
-                                ;       - RTCC к генератору
+;	Making sure the timer is set up correctly for the delay counting
+        BSF     STATUS, RP0     ;       Page #2
+        MOVLW   0xC7            ;       Setup:
+                                ;       - prescaler 1:256
+                                ;       - pullups off
+                                ;       - prescaler to RTCC
+                                ;       - RTCC to the main clock
         MOVWF   OPTION_REG
-        BCF     STATUS, RP0     ;       Страница #1
+        BCF     STATUS, RP0     ;       Page #1
 	CLRF	TMR0
 	CLRW
 	CALL	Delay
 	CLRW
 	CALL	Delay
-        BSF     STATUS, RP0     ;       Страница #2
-        MOVLW   0xC8            ;       Настройка:
-                                ;       - пределитель 1:1
-                                ;       - нагрузки отключены
-                                ;       - пределитель к WDT
-                                ;       - RTCC к генератору
+        BSF     STATUS, RP0     ;       Page #2
+        MOVLW   0xC8            ;       Setup:
+                                ;       - prescaler 1:1
+                                ;       - pullups off
+                                ;       - prescaler to WDT
+                                ;       - RTCC to the main clock
         MOVWF   OPTION_REG
-        BCF     STATUS, RP0     ;       Страница #1
+        BCF     STATUS, RP0     ;       Page #1
 
 	RETURN
 
-;	Пищим один раз 
+;	Beep just once
 BeepOnce
 
-	BSF	BzPort, BzPin	;	Включаем пищалку
+	BSF	BzPort, BzPin	;	Buzzer on
 	CALL	SleepDelay
-	BCF	BzPort, BzPin	;	Выключаем пищалку
+	BCF	BzPort, BzPin	;	Buzzer off
 	RETURN
 
-;	Открываем замок и пищим пищалкой
+;	Open the lock and beep
 ReleaseLock
 
 	BSF	BzPort, BzPin
