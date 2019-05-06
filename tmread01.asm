@@ -18,8 +18,6 @@ JPin		equ	4
 LockPort	equ	PORTB
 LockPin		equ	7
 
-
-
 LoopReg		equ	0x0C
 ComReg		equ	0x0D
 RDByte		equ	0x0E
@@ -29,27 +27,38 @@ BTM2		equ	0x11
 BTM3		equ	0x12
 BTM4		equ	0x13
 
+BANK0	MACRO
+   ERRORLEVEL 	+302
+   BCF	STATUS, RP0
+ ENDM
+ 
+BANK1	MACRO
+   BSF	STATUS, RP0
+   ERRORLEVEL 	-302
+ ENDM
+
 RESET CODE 0x0000
     GOTO Beginning
 
 MAIN CODE
 
+    ERRORLEVEL -305 ; Disable the "Using default destination of 1 (file)" msg for file register instructions
 Beginning
 	CLRF	INTCON
-        BSF     STATUS, RP0     ;       Page #2
-        MOVLW   0xC8            ;       Settings:
-                                ;       - divider 1:1
-                                ;       - pullups off
-                                ;       - divider to WDT
-                                ;       - clock RTCC
-        MOVWF   OPTION_REG
-	BCF	TRISA, TMPin    ;       iButton readet - out
-	BCF	TRISB, 1	;	debug LED - out
+    MOVLW   0xC8            ;       Settings:
+                            ;       - divider 1:1
+                            ;       - pullups off
+                            ;       - divider to WDT
+                            ;       - clock RTCC
+    BANK1
+    MOVWF   OPTION_REG
+	BCF	TRISA, TMPin    ;   iButton readet - out
+	BCF	TRISB, 1	    ;	debug LED - out
 	BCF	TRISB, BzPin	;	buzzer - out
 	BCF	TRISB, LockPin	;	door lock - out
-	BSF	TRISB, JPin	;	config button - in
-        BCF     STATUS, RP0     ;       Page #1
-
+	BSF	TRISB, JPin	    ;	config button - in
+    BANK0
+    
 	BCF	LockPort, LockPin      ;Lock the door
 	BCF	BzPort, BzPin           
 
@@ -72,7 +81,7 @@ Beginning
 	COMF	EEDATA
 
 CLRL
-        BSF     STATUS, RP0     ;       Page #2
+    BANK1
 	BSF	EECON1, WREN
 	MOVLW	0x55
 	MOVWF	EECON2
@@ -82,7 +91,7 @@ CLRL
 	BTFSS	EECON1, EEIF
 	GOTO	$-1
 	BCF	EECON1, EEIF
-        BCF     STATUS, RP0     ;       Page #1
+    BANK0
 	INCF	EEADR
 	DECFSZ	LoopReg, F
 	GOTO	CLRL
@@ -250,7 +259,6 @@ Nbl1
 	DECFSZ	LoopReg, F
 	GOTO	Nbl1
 
-
 	BSF	TMPort, TMPin	;	Setting to high, slave waits the next edge
 
 ;--	Reading data from 1-wire bus
@@ -360,16 +368,16 @@ Lp	BTFSS   INTCON, T0IF
 
 ;	Setting port to input (4 us)
 SetToInput	
-        BSF     STATUS, RP0     ;       Page #2
+    BANK1
 	BSF	TRISA, TMPin    ;       Setting to input   
-        BCF     STATUS, RP0     ;       Page #1
+    BANK0
 	RETURN
 
 ;	Setting port to output (4 us)
 SetToOutput	
-        BSF     STATUS, RP0     ;       Page #2
+    BANK1
 	BCF	TRISA, TMPin    ;       Setting to output
-        BCF     STATUS, RP0     ;       Page #1
+    BANK0
 	RETURN
 
 ;----------------------------------------------------------------------
@@ -378,7 +386,7 @@ SetToOutput
 ;	Write W to EEPROM. EEADR should be set.
 EEWrite
 	MOVWF	EEDATA
-	BSF     STATUS, RP0     ;       Page #2
+	BANK1
 	BSF	EECON1, WREN
 	MOVLW	0x55
 	MOVWF	EECON2
@@ -388,15 +396,15 @@ EEWrite
 	BTFSS	EECON1, EEIF
 	GOTO	$-1
 	BCF	EECON1, EEIF
-	BCF     STATUS, RP0     ;       Page #1
+	BANK0
 
 	RETURN
 
 ;	Read from EEPROM into W. EEADR should be set.
 EERead
-	BSF     STATUS, RP0     ;       Page #2
+	BANK1
 	BSF	EECON1, RD	;	Reading the memory
-	BCF     STATUS, RP0     ;       Page #1
+	BANK0
 	NOP
 	NOP
 	MOVF	EEDATA, W
@@ -462,27 +470,27 @@ Lpw2    BTFSS   INTCON, T0IF	;	Delay ~224us
 SleepDelay
 
 ;	Making sure the timer is set up correctly for the delay counting
-        BSF     STATUS, RP0     ;       Page #2
+    BANK1
         MOVLW   0xC7            ;       Setup:
                                 ;       - prescaler 1:256
                                 ;       - pullups off
                                 ;       - prescaler to RTCC
                                 ;       - RTCC to the main clock
         MOVWF   OPTION_REG
-        BCF     STATUS, RP0     ;       Page #1
+    BANK0
 	CLRF	TMR0
 	CLRW
 	CALL	Delay
 	CLRW
 	CALL	Delay
-        BSF     STATUS, RP0     ;       Page #2
+        BANK1
         MOVLW   0xC8            ;       Setup:
                                 ;       - prescaler 1:1
                                 ;       - pullups off
                                 ;       - prescaler to WDT
                                 ;       - RTCC to the main clock
         MOVWF   OPTION_REG
-        BCF     STATUS, RP0     ;       Page #1
+        BANK0
 
 	RETURN
 
